@@ -16,6 +16,14 @@
 
 #define MAKEINTRESOURCEW(i) ((PWCH)((ULONG_PTR)((USHORT)(i))))
 
+typedef struct _SYSTEM_SERVICE_DESCRIPTOR_TABLE 
+{
+    PULONG_PTR ServiceTableBase;
+    PULONG ServiceCounterTableBase;
+    ULONG_PTR NumberOfServices;
+    PUCHAR ParamTableBase;
+} SYSTEM_SERVICE_DESCRIPTOR_TABLE, *PSYSTEM_SERVICE_DESCRIPTOR_TABLE;
+
 typedef union _PS_PROTECTION
 {
     UCHAR Level;
@@ -43,6 +51,38 @@ typedef union _KEXECUTE_OPTIONS
 
     UCHAR ExecuteOptions;
 } KEXECUTE_OPTIONS, *PKEXECUTE_OPTIONS;
+
+typedef struct _EPROCESS_FLAGS2
+{
+    unsigned int JobNotReallyActive : 1;
+    unsigned int AccountingFolded : 1;
+    unsigned int NewProcessReported : 1;
+    unsigned int ExitProcessReported : 1;
+    unsigned int ReportCommitChanges : 1;
+    unsigned int LastReportMemory : 1;
+    unsigned int ForceWakeCharge : 1;
+    unsigned int CrossSessionCreate : 1;
+    unsigned int NeedsHandleRundown : 1;
+    unsigned int RefTraceEnabled : 1;
+    unsigned int DisableDynamicCode : 1;
+    unsigned int EmptyJobEvaluated : 1;
+    unsigned int DefaultPagePriority : 3;
+    unsigned int PrimaryTokenFrozen : 1;
+    unsigned int ProcessVerifierTarget : 1;
+    unsigned int StackRandomizationDisabled : 1;
+    unsigned int AffinityPermanent : 1;
+    unsigned int AffinityUpdateEnable : 1;
+    unsigned int PropagateNode : 1;
+    unsigned int ExplicitAffinity : 1;
+    unsigned int ProcessExecutionState : 2;
+    unsigned int DisallowStrippedImages : 1;
+    unsigned int HighEntropyASLREnabled : 1;
+    unsigned int ExtensionPointDisable : 1;
+    unsigned int ForceRelocateImages : 1;
+    unsigned int ProcessStateChangeRequest : 2;
+    unsigned int ProcessStateChangeInProgress : 1;
+    unsigned int DisallowWin32kSystemCalls : 1;
+} EPROCESS_FLAGS2, *PEPROCESS_FLAGS2;
 
 typedef union _EXHANDLE
 {
@@ -135,7 +175,37 @@ typedef struct _OBJECT_HEADER // Size=56
     struct _QUAD Body; // Size=8 Offset=48
 } OBJECT_HEADER, *POBJECT_HEADER;
 
-typedef struct _MEMORY_BASIC_INFORMATION
+typedef union _EX_FAST_REF // Size=8
+{
+    void * Object;
+    struct
+    {
+        unsigned __int64 RefCnt : 4; 
+    };
+    unsigned __int64 Value;
+} EX_FAST_REF, *PEX_FAST_REF;
+
+typedef struct _CONTROL_AREA // Size=120
+{
+    struct _SEGMENT * Segment;
+    struct _LIST_ENTRY ListHead;
+    unsigned __int64 NumberOfSectionReferences;
+    unsigned __int64 NumberOfPfnReferences; 
+    unsigned __int64 NumberOfMappedViews;
+    unsigned __int64 NumberOfUserReferences;
+    unsigned long f1; 
+    unsigned long f2;
+    EX_FAST_REF FilePointer;
+    // Other fields
+} CONTROL_AREA, *PCONTROL_AREA;
+
+typedef struct _SUBSECTION // Size=56
+{
+    PCONTROL_AREA ControlArea;
+    // Other fields
+} SUBSECTION, *PSUBSECTION;
+
+typedef struct _MEMORY_BASIC_INFORMATION_EX
 {
     PVOID BaseAddress;
     PVOID AllocationBase;
@@ -144,7 +214,7 @@ typedef struct _MEMORY_BASIC_INFORMATION
     ULONG State;
     ULONG Protect;
     ULONG Type;
-} MEMORY_BASIC_INFORMATION, *PMEMORY_BASIC_INFORMATION;
+} MEMORY_BASIC_INFORMATION_EX, *PMEMORY_BASIC_INFORMATION_EX;
 
 typedef struct _SYSTEM_CALL_COUNT_INFORMATION
 {

@@ -1,6 +1,7 @@
 #include "Private.h"
 #include "Routines.h"
 #include "Loader.h"
+#include "Utils.h"
 #include <Ntstrsafe.h>
 
 #define CALL_COMPLETE   0xC0371E7E
@@ -56,13 +57,11 @@ NTSTATUS BBInjectDll( IN PINJECT_DLL pData )
         PVOID LdrLoadDll = NULL;
         PVOID systemBuffer = NULL;
         BOOLEAN isWow64 = (PsGetProcessWow64Process( pProcess ) != NULL) ? TRUE : FALSE;
-        LARGE_INTEGER procTimeout = { 0 };
 
         // Process in signaled state, abort any operations
-        if (KeWaitForSingleObject( pProcess, Executive, KernelMode, FALSE, &procTimeout ) == STATUS_WAIT_0)
+        if (BBCheckProcessTermination( PsGetCurrentProcess() ))
         {
             DPRINT( "BlackBone: %s: Process %u is terminating. Abort\n", __FUNCTION__, pData->pid );
-
             if (pProcess)
                 ObDereferenceObject( pProcess );
 
@@ -109,8 +108,7 @@ NTSTATUS BBInjectDll( IN PINJECT_DLL pData )
                     );
             }
             __except (EXCEPTION_EXECUTE_HANDLER){
-                DPRINT( "BlackBone: %s: Fatal exception in BBMapUserImage. Exception code 0x%x\n", 
-                        __FUNCTION__, GetExceptionCode() );
+                DPRINT( "BlackBone: %s: Fatal exception in BBMapUserImage. Exception code 0x%x\n", __FUNCTION__, GetExceptionCode() );
             }
 
             KeUnstackDetachProcess( &apc );
@@ -144,8 +142,10 @@ NTSTATUS BBInjectDll( IN PINJECT_DLL pData )
         // If process is protected - temporarily disable protection
         if (PsIsProtectedProcess( pProcess ))
         {
-            prot.pid = pData->pid;
-            prot.enableState = FALSE;
+            prot.pid         = pData->pid;
+            prot.protection  = Policy_Disable;
+            prot.dynamicCode = Policy_Disable;
+            prot.signature   = Policy_Disable;
             BBSetProtection( &prot );
         }
 
@@ -204,9 +204,9 @@ NTSTATUS BBInjectDll( IN PINJECT_DLL pData )
                         if (pHdr)
                         {
                             ULONG oldProt = 0;
-                            SIZE_T size = (pHdr->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC) ? 
-                                            ((PIMAGE_NT_HEADERS32)pHdr)->OptionalHeader.SizeOfHeaders :
-                                            pHdr->OptionalHeader.SizeOfHeaders;
+                            size = (pHdr->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC) ?
+                                ((PIMAGE_NT_HEADERS32)pHdr)->OptionalHeader.SizeOfHeaders :
+                                pHdr->OptionalHeader.SizeOfHeaders;
 
                             if (NT_SUCCESS( ZwProtectVirtualMemory( ZwCurrentProcess(), &pUserBuf->module, &size, PAGE_EXECUTE_READWRITE, &oldProt ) ))
                             {
@@ -232,7 +232,9 @@ NTSTATUS BBInjectDll( IN PINJECT_DLL pData )
         // Restore protection
         if (prot.pid != 0)
         {
-            prot.enableState = TRUE;
+            prot.protection  = Policy_Enable;
+            prot.dynamicCode = Policy_Enable;
+            prot.signature   = Policy_Enable;
             BBSetProtection( &prot );
         }
 
@@ -280,7 +282,7 @@ PINJECT_BUFFER BBGetWow64Code( IN PVOID LdrLoadDll, IN PUNICODE_STRING pPath )
         PUNICODE_STRING32 pUserPath = &pBuffer->path32;
         pUserPath->Length = pPath->Length;
         pUserPath->MaximumLength = pPath->MaximumLength;
-        pUserPath->Buffer = (ULONG)pBuffer->buffer;
+        pUserPath->Buffer = (ULONG)(ULONG_PTR)pBuffer->buffer;
 
         // Copy path
         memcpy( (PVOID)pUserPath->Buffer, pPath->Buffer, pPath->Length );
@@ -289,10 +291,10 @@ PINJECT_BUFFER BBGetWow64Code( IN PVOID LdrLoadDll, IN PUNICODE_STRING pPath )
         memcpy( pBuffer, code, sizeof( code ) );
 
         // Fill stubs
-        *(ULONG*)((PUCHAR)pBuffer + 1)  = (ULONG)&pBuffer->module;
-        *(ULONG*)((PUCHAR)pBuffer + 6)  = (ULONG)pUserPath;
+        *(ULONG*)((PUCHAR)pBuffer + 1)  = (ULONG)(ULONG_PTR)&pBuffer->module;
+        *(ULONG*)((PUCHAR)pBuffer + 6)  = (ULONG)(ULONG_PTR)pUserPath;
         *(ULONG*)((PUCHAR)pBuffer + 15) = (ULONG)((ULONG_PTR)LdrLoadDll - ((ULONG_PTR)pBuffer + 15) - 5 + 1);
-        *(ULONG*)((PUCHAR)pBuffer + 20) = (ULONG)&pBuffer->complete;
+        *(ULONG*)((PUCHAR)pBuffer + 20) = (ULONG)(ULONG_PTR)&pBuffer->complete;
 
         return pBuffer;
     }
@@ -376,7 +378,7 @@ NTSTATUS BBApcInject( IN PINJECT_BUFFER pUserBuf, IN HANDLE pid, IN ULONG initRV
 
     if (NT_SUCCESS( status ))
     {
-        status = BBQueueUserApc( pThread, pUserBuf, NULL, NULL, NULL, TRUE );
+        status = BBQueueUserApc( pThread, pUserBuf->code, NULL, NULL, NULL, TRUE );
 
         // Wait for completion
         if (NT_SUCCESS( status ))
@@ -384,30 +386,33 @@ NTSTATUS BBApcInject( IN PINJECT_BUFFER pUserBuf, IN HANDLE pid, IN ULONG initRV
             LARGE_INTEGER interval = { 0 };
             interval.QuadPart = -(5LL * 10 * 1000);
 
-            // Protect from UserMode AV
-            __try
+            for (ULONG i = 0; i < 10000; i++)
             {
-                for (ULONG i = 0; pUserBuf->complete != CALL_COMPLETE && i < 10000; i++)
-                    KeDelayExecutionThread( KernelMode, FALSE, &interval );
-
-                // Call init routine
-                if (pUserBuf->module != 0 && initRVA != 0)
+                if (BBCheckProcessTermination( PsGetCurrentProcess() ) || PsIsThreadTerminating( pThread ))
                 {
-                    RtlCopyMemory( (PUCHAR)pUserBuf->buffer, InitArg, sizeof( pUserBuf->buffer ) );
-                    BBQueueUserApc( pThread, (PUCHAR)pUserBuf->module + initRVA, pUserBuf->buffer, NULL, NULL, TRUE );
-
-                    // Wait some time for routine to finish
-                    interval.QuadPart = -(100LL * 10 * 1000);
-                    KeDelayExecutionThread( KernelMode, FALSE, &interval );
+                    status = STATUS_PROCESS_IS_TERMINATING;
+                    break;
                 }
-                else if (pUserBuf->module == 0)
-                    DPRINT( "BlackBone: %s: Module base = 0. Aborting\n", __FUNCTION__ );
+
+                if(pUserBuf->complete == CALL_COMPLETE)
+                    break;
+
+                if (!NT_SUCCESS( status = KeDelayExecutionThread( KernelMode, FALSE, &interval ) ))
+                    break;
             }
-            __except (EXCEPTION_EXECUTE_HANDLER)
+
+            // Call init routine
+            if (NT_SUCCESS( status ) && pUserBuf->module != 0 && initRVA != 0)
             {
-                DPRINT( "BlackBone: %s: Exception\n", __FUNCTION__ );
-                status = STATUS_ACCESS_VIOLATION;
-            }            
+                RtlCopyMemory( (PUCHAR)pUserBuf->buffer, InitArg, sizeof( pUserBuf->buffer ) );
+                BBQueueUserApc( pThread, (PUCHAR)pUserBuf->module + initRVA, pUserBuf->buffer, NULL, NULL, TRUE );
+
+                // Wait some time for routine to finish
+                interval.QuadPart = -(100LL * 10 * 1000);
+                KeDelayExecutionThread( KernelMode, FALSE, &interval );
+            }
+            else
+                DPRINT( "BlackBone: %s: APC injection abnormal termination, status 0x%X\n", __FUNCTION__, status );
         }
     }
     else

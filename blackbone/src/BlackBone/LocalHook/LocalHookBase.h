@@ -2,7 +2,7 @@
 
 #include "../Config.h"
 #include "../Include/Winheaders.h"
-#include "../Asm/AsmHelper.h"
+#include "../Asm/AsmFactory.h"
 #include "../Asm/LDasm.h"
 #include "../Include/Macro.h"
 
@@ -47,13 +47,20 @@ namespace ReturnMethod
 
 class DetourBase
 {
-    typedef std::unordered_map<DWORD, int> mapIdx;
+    using mapIdx = std::unordered_map<DWORD, int>;
 
 public:
     BLACKBONE_API DetourBase();
     BLACKBONE_API ~DetourBase();
 
 protected:
+
+    /// <summary>
+    /// Allocate detour buffer as close to target as possible
+    /// </summary>
+    /// <param name="nearest">Target address</param>
+    /// <returns>true on success</returns>
+    BLACKBONE_API bool AllocateBuffer( uint8_t* nearest );
 
     /// <summary>
     /// Temporarily disable hook

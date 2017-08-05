@@ -20,10 +20,9 @@ Process::Process()
     , _mmap( *this )
     , _nativeLdr( *this )
 {
-    GrantPriviledge( SE_DEBUG_NAME );
-    GrantPriviledge( SE_LOAD_DRIVER_NAME );
-
-    NameResolve::Instance().Initialize(); 
+    // Ensure InitOnce is called
+    auto i = g_Initialized;
+    UNREFERENCED_PARAMETER( i );
 }
 
 Process::~Process(void)
@@ -41,11 +40,8 @@ NTSTATUS Process::Attach( DWORD pid, DWORD access /*= DEFAULT_ACCESS_P*/ )
     Detach();
 
     auto status = _core.Open( pid, access );
-    if (NT_SUCCESS( status ))
-    {
-        _nativeLdr.Init();
-        _remote.CreateRPCEnvironment( false, false );
-    }
+    if (NT_SUCCESS( status ) && (access & PROCESS_VM_WRITE))
+        status = _remote.CreateRPCEnvironment();
 
     return status;
 }
@@ -62,11 +58,25 @@ NTSTATUS Process::Attach( HANDLE hProc )
     auto status = _core.Open( hProc );
     if (NT_SUCCESS( status ))
     {
-        _nativeLdr.Init();
-        _remote.CreateRPCEnvironment( false, false );
+        if (!valid())
+            return STATUS_INVALID_HANDLE;
+
+        _remote.CreateRPCEnvironment();
     }
 
     return status;
+}
+
+/// <summary>
+/// Attach to existing process
+/// </summary>
+/// <param name="name">Process name</param>
+/// <param name="access">Access mask</param>
+/// <returns>Status code</returns>
+NTSTATUS Process::Attach( const wchar_t* name, DWORD access /*= DEFAULT_ACCESS_P*/ )
+{
+    auto pids = EnumByName( name );
+    return pids.empty() ? STATUS_NOT_FOUND : Attach( pids.front(), access );
 }
 
 /// <summary>
@@ -108,8 +118,6 @@ NTSTATUS Process::CreateAndAttach(
     auto status = _core.Open( pi.hProcess );
     if (NT_SUCCESS( status ))
     {
-        _nativeLdr.Init();
-
         // Check if process must be left in suspended mode
         if (suspended)
         {
@@ -151,13 +159,30 @@ NTSTATUS Process::Detach()
 /// <returns>Status code</returns>
 NTSTATUS Process::EnsureInit()
 {
-    auto pProc = _modules.GetExport( _modules.GetModule( L"ntdll.dll", blackbone::Sections ), "NtYieldExecution" ).procAddress;
+    auto pProc = _modules.GetNtdllExport( "NtYieldExecution", mt_default, Sections );
     if (pProc)
-        return _remote.ExecDirect( pProc, 0 );
+        return _remote.ExecDirect( pProc->procAddress, 0 );
 
     return STATUS_NOT_FOUND;
 }
 
+/// <summary>
+/// Suspend process
+/// </summary>
+/// <returns>Status code</returns>
+NTSTATUS Process::Suspend()
+{
+    return SAFE_NATIVE_CALL( NtSuspendProcess, _core._hProcess );
+}
+
+/// <summary>
+/// Resume process
+/// </summary>
+/// <returns>Status code</returns>
+NTSTATUS Process::Resume()
+{
+    return SAFE_NATIVE_CALL( NtResumeProcess, _core._hProcess );
+}
 
 /// <summary>
 /// Checks if process still exists
@@ -187,23 +212,23 @@ NTSTATUS Process::Terminate( uint32_t code /*= 0*/ )
 /// <summary>
 /// Enumerate all open handles
 /// </summary>
-/// <param name="handles">Found handles</param>
-/// <returns>Status code</returns>
-NTSTATUS Process::EnumHandles( std::vector<HandleInfo>& handles )
+/// <returns>Found handles or status code</returns>
+call_result_t<std::vector<HandleInfo>> Process::EnumHandles()
 {
     ULONG bufSize = 0x10000;
     uint8_t* buffer = (uint8_t*)VirtualAlloc( NULL, bufSize, MEM_COMMIT, PAGE_READWRITE );
     ULONG returnLength = 0;
+    std::vector<HandleInfo> handles;
 
     // Query handle list
-    NTSTATUS status = SAFE_NATIVE_CALL( NtQuerySystemInformation, SystemHandleInformation, buffer, bufSize, &returnLength);
+    NTSTATUS status = SAFE_NATIVE_CALL( NtQuerySystemInformation, SystemHandleInformation, buffer, bufSize, &returnLength );
     while (status == STATUS_INFO_LENGTH_MISMATCH)
     {
         bufSize *= 2;
         VirtualFree( buffer, 0, MEM_RELEASE );
         buffer = (uint8_t*)VirtualAlloc( NULL, bufSize, MEM_COMMIT, PAGE_READWRITE );
 
-        status = SAFE_NATIVE_CALL( NtQuerySystemInformation, SystemHandleInformation, buffer, bufSize, &returnLength);
+        status = SAFE_NATIVE_CALL( NtQuerySystemInformation, SystemHandleInformation, buffer, bufSize, &returnLength );
     }
 
     if (!NT_SUCCESS( status ))
@@ -220,14 +245,20 @@ NTSTATUS Process::EnumHandles( std::vector<HandleInfo>& handles )
         OBJECT_TYPE_INFORMATION_T* pTypeInfo = nullptr;
         PVOID pNameInfo = nullptr;
         UNICODE_STRING objectName = { 0 };
-        ULONG returnLength = 0;
 
         // Filter process
         if (handleInfo->Handles[i].ProcessId != _core._pid)
             continue;
 
         // Get local handle copy
-        status = SAFE_NATIVE_CALL( NtDuplicateObject, _core._hProcess, reinterpret_cast<HANDLE>(handleInfo->Handles[i].Handle), GetCurrentProcess(), &hLocal, 0, 0, DUPLICATE_SAME_ACCESS);
+        status = SAFE_NATIVE_CALL(
+            NtDuplicateObject,
+            _core._hProcess,
+            reinterpret_cast<HANDLE>(handleInfo->Handles[i].Handle),
+            GetCurrentProcess(),
+            &hLocal, 0, 0, DUPLICATE_SAME_ACCESS
+            );
+
         if (!NT_SUCCESS( status ))
             continue;
 
@@ -301,47 +332,7 @@ NTSTATUS Process::EnumHandles( std::vector<HandleInfo>& handles )
     }
 
     VirtualFree( buffer, 0, MEM_RELEASE );
-    return status;
-}
-
-
-/// <summary>
-/// Grant current process arbitrary privilege
-/// </summary>
-/// <param name="name">Privilege name</param>
-/// <returns>Status</returns>
-NTSTATUS Process::GrantPriviledge( const std::basic_string<TCHAR>& name )
-{
-    TOKEN_PRIVILEGES Priv, PrivOld;
-    DWORD cbPriv = sizeof(PrivOld);
-    HANDLE hToken;
-
-    if (!OpenThreadToken( GetCurrentThread(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, FALSE, &hToken ))
-    {
-        if (GetLastError() != ERROR_NO_TOKEN)
-            return LastNtStatus();
-
-        if (!OpenProcessToken( GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, &hToken ))
-            return LastNtStatus();
-    }
-
-    Priv.PrivilegeCount = 1;
-    Priv.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-    LookupPrivilegeValue( NULL, name.c_str(), &Priv.Privileges[0].Luid );
-
-    if (!AdjustTokenPrivileges( hToken, FALSE, &Priv, sizeof(Priv), &PrivOld, &cbPriv ))
-    {
-        CloseHandle( hToken );
-        return LastNtStatus();
-    }
-
-    if (GetLastError() == ERROR_NOT_ALL_ASSIGNED)
-    {
-        CloseHandle( hToken );
-        return LastNtStatus();
-    }
-    
-    return STATUS_SUCCESS;
+    return call_result_t<std::vector<HandleInfo>>( handles, status );
 }
 
 /// <summary>
@@ -349,8 +340,9 @@ NTSTATUS Process::GrantPriviledge( const std::basic_string<TCHAR>& name )
 /// </summary>
 /// <param name="name">Process name. If empty - function will retrieve all existing processes</param>
 /// <param name="found">Found processses</param>
-void Process::EnumByName( const std::wstring& name, std::vector<DWORD>& found )
+std::vector<DWORD> Process::EnumByName( const std::wstring& name )
 {
+    std::vector<DWORD> found;
     HANDLE hProcSnap = CreateToolhelp32Snapshot( TH32CS_SNAPPROCESS, 0 );
 
     if (hProcSnap != INVALID_HANDLE_VALUE)
@@ -369,6 +361,8 @@ void Process::EnumByName( const std::wstring& name, std::vector<DWORD>& found )
 
         CloseHandle( hProcSnap );
     }
+
+    return found;
 }
 
 /// <summary>
@@ -379,10 +373,9 @@ void Process::EnumByName( const std::wstring& name, std::vector<DWORD>& found )
 /// <param name="found">Found processses</param>
 /// <param name="includeThreads">If set to true, function will retrieve info ablout process threads</param>
 /// <returns>Status code</returns>
-NTSTATUS Process::EnumByNameOrPID(
+call_result_t<std::vector<ProcessInfo>> Process::EnumByNameOrPID(
     uint32_t pid,
     const std::wstring& name,
-    std::vector<ProcessInfo>& found,
     bool includeThreads /*= false*/
     )
 {
@@ -390,8 +383,7 @@ NTSTATUS Process::EnumByNameOrPID(
     uint8_t tmpbuf[0x100];
     uint8_t* buffer = tmpbuf;
     ULONG returnLength = 0;
-
-    found.clear();
+    std::vector<ProcessInfo> found;
 
     // Query process info
     NTSTATUS status = SAFE_NATIVE_CALL( NtQuerySystemInformation, (SYSTEM_INFORMATION_CLASS)57, buffer, bufSize, &returnLength );
@@ -459,7 +451,7 @@ NTSTATUS Process::EnumByNameOrPID(
     std::sort( found.begin(), found.end() );
 
     VirtualFree( buffer, 0, MEM_RELEASE );
-    return status;
+    return call_result_t<std::vector<ProcessInfo>>( found, status );
 }
 
 

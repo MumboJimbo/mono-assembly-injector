@@ -1,6 +1,5 @@
 #pragma once
-#include <wdm.h>
-
+#include <ntifs.h>
 
 /// <summary>
 /// Allocate new Unicode string from Paged pool
@@ -27,7 +26,6 @@ NTSTATUS BBSafeInitString( OUT PUNICODE_STRING result, IN PUNICODE_STRING source
 /// <returns>Found position or -1 if not found</returns>
 LONG BBSafeSearchString( IN PUNICODE_STRING source, IN PUNICODE_STRING target, IN BOOLEAN CaseInSensitive );
 
-
 /// <summary>
 /// Get file name from full path
 /// </summary>
@@ -50,6 +48,32 @@ NTSTATUS BBStripFilename( IN PUNICODE_STRING path, OUT PUNICODE_STRING dir );
 /// <param name="path">Fully qualifid path to a file</param>
 /// <returns>Status code</returns>
 NTSTATUS BBFileExists( IN PUNICODE_STRING path );
+
+/// <summary>
+/// Search for pattern
+/// </summary>
+/// <param name="pattern">Pattern to search for</param>
+/// <param name="wildcard">Used wildcard</param>
+/// <param name="len">Pattern length</param>
+/// <param name="base">Base address for searching</param>
+/// <param name="size">Address range to search in</param>
+/// <param name="ppFound">Found location</param>
+/// <returns>Status code</returns>
+NTSTATUS BBSearchPattern( IN PCUCHAR pattern, IN UCHAR wildcard, IN ULONG_PTR len, IN const VOID* base, IN ULONG_PTR size, OUT PVOID* ppFound );
+
+/// <summary>
+/// Setup image security cookie
+/// </summary>
+/// <param name="imageBase">Image base</param>
+/// <returns>Status code</returns>
+NTSTATUS BBCreateCookie( IN PVOID imageBase );
+
+/// <summary>
+/// Check if process is terminating
+/// </summary>
+/// <param name="imageBase">Process</param>
+/// <returns>If TRUE - terminating</returns>
+BOOLEAN BBCheckProcessTermination( PEPROCESS pProcess );
 
 //
 // Machine code generation routines

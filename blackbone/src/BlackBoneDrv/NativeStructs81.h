@@ -124,6 +124,7 @@ typedef struct _MMVAD // Size=128
 {
     struct _MMVAD_SHORT Core; // Size=64 Offset=0
     union ___unnamed1956 u2; // Size=4 Offset=64
+    unsigned long pad0; // Size=4 Offset=68
     struct _SUBSECTION * Subsection; // Size=8 Offset=72
     struct _MMPTE * FirstPrototypePte; // Size=8 Offset=80
     struct _MMPTE * LastContiguousPte; // Size=8 Offset=88
@@ -166,8 +167,12 @@ typedef struct _HANDLE_TABLE
     ULONG NextHandleNeedingPool;
     long ExtraInfoPages;
     LONG_PTR TableCode;
-    PEPROCESS QuotaProcess; 
+    struct _EPROCESS * QuotaProcess;
     LIST_ENTRY HandleTableList;
+    ULONG UniqueProcessId;
+    ULONG Flags;
+    EX_PUSH_LOCK HandleContentionEvent;
+    EX_PUSH_LOCK HandleTableLock;
     // More fields here...
 } HANDLE_TABLE, *PHANDLE_TABLE;
 

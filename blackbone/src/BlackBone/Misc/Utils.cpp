@@ -122,7 +122,7 @@ std::wstring Utils::GetExeDirectory()
     wchar_t imgName[MAX_PATH] = { 0 };
     DWORD len = ARRAYSIZE(imgName);
 
-    auto pFunc = reinterpret_cast<fnQueryFullProcessImageNameW>(DynImport::load( "QueryFullProcessImageNameW", L"kernel32.dll" ));
+    auto pFunc = GET_IMPORT( QueryFullProcessImageNameW );
     if (pFunc != nullptr)
         pFunc( GetCurrentProcess(), 0, imgName, &len );
     else
@@ -162,7 +162,7 @@ std::wstring Utils::RandomANString( int length /*= 0*/ )
 std::wstring Utils::ToLower( const std::wstring& str )
 {
     std::wstring str2( str );
-    std::transform( str2.begin(), str2.end(), str2.begin(), ::tolower );
+    std::transform( str2.begin(), str2.end(), str2.begin(), ::towlower );
 
     return str2;
 }

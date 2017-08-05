@@ -1,5 +1,5 @@
 #pragma once
-
+#include <Catch/catch.hpp>
 #include "../BlackBone/Config.h"
 #include "../BlackBone/Process/Process.h"
 #include "../BlackBone/PE/PEImage.h"
@@ -10,11 +10,8 @@
 
 using namespace blackbone;
 
-void TestPatterns();
-void TestLocalHook();
-void TestRemoteHook();
+#define CHECK_NT_SUCCESS(Status)    CHECK((NTSTATUS)(Status) >= 0)
+#define REQUIRE_NT_SUCCESS(Status)  REQUIRE((NTSTATUS)(Status) >= 0)
+
 void TestMMap();
 void TestMMapFromMem();
-void TestRemoteCall();
-void TestDriver();
-void TestRemoteMem();

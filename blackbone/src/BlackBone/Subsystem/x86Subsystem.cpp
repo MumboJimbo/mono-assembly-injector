@@ -52,7 +52,7 @@ NTSTATUS x86Native::VirtualQueryExT( ptr_t lpAddress, PMEMORY_BASIC_INFORMATION6
 /// <returns>Status code</returns>
 NTSTATUS x86Native::GetThreadContextT( HANDLE hThread, _CONTEXT32& ctx )
 {
-    LastNtStatus( STATUS_SUCCESS );
+    SetLastNtStatus( STATUS_SUCCESS );
     GetThreadContext( hThread, reinterpret_cast<PCONTEXT>(&ctx) );
     return LastNtStatus();
 }
@@ -77,7 +77,7 @@ NTSTATUS x86Native::GetThreadContextT( HANDLE /*hThread*/, _CONTEXT64& /*ctx*/ )
 /// <returns>Status code</returns>
 NTSTATUS x86Native::SetThreadContextT( HANDLE hThread, _CONTEXT32& ctx )
 {
-    LastNtStatus( STATUS_SUCCESS );
+    SetLastNtStatus( STATUS_SUCCESS );
     SetThreadContext( hThread, reinterpret_cast<const CONTEXT*>(&ctx) );
     return LastNtStatus();
 }
@@ -118,7 +118,7 @@ ptr_t x86Native::getPEB( _PEB32* ppeb )
 ptr_t x86Native::getPEB( _PEB64* /*ppeb*/ )
 {
     // There is no x64 PEB under x86 OS
-    LastNtStatus( STATUS_NOT_SUPPORTED );
+    SetLastNtStatus( STATUS_NOT_SUPPORTED );
     return 0;
 }
 
@@ -133,7 +133,7 @@ ptr_t x86Native::getTEB( HANDLE hThread, _TEB32* pteb )
     ULONG bytes = 0;
 
     if (NT_SUCCESS( SAFE_NATIVE_CALL( NtQueryInformationThread, hThread, (THREADINFOCLASS)0, &tbi, (ULONG)sizeof( tbi ), &bytes ) ) && pteb)
-        ReadProcessMemory( _hProcess, reinterpret_cast<LPCVOID>(tbi.TebBaseAddress), pteb, sizeof(_TEB32), NULL );
+        ReadProcessMemory( _hProcess, (LPCVOID)((uintptr_t)tbi.TebBaseAddress), pteb, sizeof(_TEB32), NULL );
 
     return tbi.TebBaseAddress;
 }
@@ -146,7 +146,7 @@ ptr_t x86Native::getTEB( HANDLE hThread, _TEB32* pteb )
 ptr_t x86Native::getTEB( HANDLE /*hThread*/, _TEB64* /*pteb*/ )
 {
     // There is no x64 TEB under x86 OS
-    LastNtStatus( STATUS_NOT_SUPPORTED );
+    SetLastNtStatus( STATUS_NOT_SUPPORTED );
     return 0;
 }
 
